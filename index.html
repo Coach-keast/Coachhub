@@ -369,56 +369,80 @@ function RecordingStudio({client, onSave}) {
 
   const ASSEMBLYAI_KEY = '062bf8761f4d42c6b806cdd17e46cdc7';
 
-  // Upload audio blob or file to AssemblyAI, transcribe, then use Claude API for coaching summary
   const runProcessing = async (dur, audioBlob) => {
     setStage('processing'); setProcessingStep(1);
     const fn = client.name.split(' ')[0];
 
     try {
+      // ── Step 1: Upload audio file ──
       let uploadUrl = null;
 
-      // ── Step 1: Upload audio ──
       if (audioBlob) {
         const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
           method: 'POST',
-          headers: { 'authorization': ASSEMBLYAI_KEY, 'content-type': 'application/octet-stream' },
+          headers: {
+            'authorization': ASSEMBLYAI_KEY,
+          },
           body: audioBlob
         });
+
+        if (!uploadRes.ok) {
+          const errText = await uploadRes.text();
+          throw new Error(`Upload failed (${uploadRes.status}): ${errText}`);
+        }
+
         const uploadData = await uploadRes.json();
         uploadUrl = uploadData.upload_url;
+        if (!uploadUrl) throw new Error('No upload URL returned from AssemblyAI');
       }
 
       setProcessingStep(2);
 
-      // ── Step 2: Request transcription ──
+      // ── Step 2: Submit transcription job ──
+      const transcriptBody = {
+        audio_url: uploadUrl,
+        speaker_labels: true,
+        speakers_expected: 2,
+      };
+
       const transcriptRes = await fetch('https://api.assemblyai.com/v2/transcript', {
         method: 'POST',
-        headers: { 'authorization': ASSEMBLYAI_KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          audio_url: uploadUrl || 'https://storage.googleapis.com/aai-docs-samples/nbc.mp3',
-          speaker_labels: true,
-          speakers_expected: 2,
-          auto_chapters: true,
-        })
+        headers: {
+          'authorization': ASSEMBLYAI_KEY,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(transcriptBody)
       });
+
+      if (!transcriptRes.ok) {
+        const errText = await transcriptRes.text();
+        throw new Error(`Transcription request failed (${transcriptRes.status}): ${errText}`);
+      }
+
       const transcriptData = await transcriptRes.json();
       const transcriptId = transcriptData.id;
+      if (!transcriptId) throw new Error('No transcript ID returned');
 
-      // ── Step 3: Poll until complete ──
+      // ── Step 3: Poll for completion ──
       let transcript = null;
-      let attempts = 0;
-      while (attempts < 60) {
+      for (let i = 0; i < 120; i++) {
         await new Promise(r => setTimeout(r, 3000));
         const pollRes = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
           headers: { 'authorization': ASSEMBLYAI_KEY }
         });
         const pollData = await pollRes.json();
-        if (pollData.status === 'completed') { transcript = pollData; break; }
-        if (pollData.status === 'error') throw new Error(pollData.error);
-        attempts++;
+
+        if (pollData.status === 'completed') {
+          transcript = pollData;
+          break;
+        }
+        if (pollData.status === 'error') {
+          throw new Error(`Transcription error: ${pollData.error}`);
+        }
+        // still processing — keep polling
       }
 
-      if (!transcript) throw new Error('Transcription timed out');
+      if (!transcript) throw new Error('Transcription timed out after 6 minutes');
 
       setProcessingStep(3);
 
@@ -426,92 +450,84 @@ function RecordingStudio({client, onSave}) {
       let formattedTranscript = '';
       if (transcript.utterances && transcript.utterances.length > 0) {
         const speakerMap = {};
-        let speakerCount = 0;
+        let count = 0;
         const labels = ['Coach', fn];
         transcript.utterances.forEach(u => {
           if (!(u.speaker in speakerMap)) {
-            speakerMap[u.speaker] = labels[speakerCount] || `Speaker ${speakerCount + 1}`;
-            speakerCount++;
+            speakerMap[u.speaker] = labels[count] || `Speaker ${count + 1}`;
+            count++;
           }
           formattedTranscript += `${speakerMap[u.speaker]}: ${u.text}\n\n`;
         });
       } else {
-        formattedTranscript = transcript.text || 'Transcription complete.';
+        formattedTranscript = transcript.text || '';
       }
 
-      // ── Step 5: Generate AI coaching summary via Claude API ──
-      const summaryPrompt = `You are an expert life coaching assistant. Analyse this coaching session transcript and extract structured insights.
+      // ── Step 5: AI coaching summary via Claude ──
+      const summaryPrompt = `You are an expert life coaching assistant. Analyse this coaching session transcript carefully.
 
-Client name: ${client.name}
-Client goals: ${client.goals?.join(', ')}
-Client intention: ${client.intentions}
+Client: ${client.name}
+Goals: ${client.goals?.join(', ')}
+Intention: ${client.intentions}
 
 TRANSCRIPT:
 ${formattedTranscript.slice(0, 8000)}
 
-Respond ONLY with a valid JSON object in this exact format (no markdown, no backticks):
-{
-  "themes": ["theme 1", "theme 2", "theme 3"],
-  "breakthroughs": ["breakthrough 1", "breakthrough 2"],
-  "actions": ["action item 1", "action item 2", "action item 3"]
-}
+Respond ONLY with a JSON object, no markdown, no explanation, just the JSON:
+{"themes":["theme 1","theme 2","theme 3"],"breakthroughs":["breakthrough 1","breakthrough 2"],"actions":["action 1","action 2","action 3"]}
 
-Base themes, breakthroughs and actions ONLY on what was actually said in the transcript.`;
+Base everything ONLY on what was actually said in the transcript.`;
 
       let summary = { themes: [], breakthroughs: [], actions: [] };
+
       try {
         const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
-            max_tokens: 1000,
+            max_tokens: 800,
             messages: [{ role: 'user', content: summaryPrompt }]
           })
         });
         const claudeData = await claudeRes.json();
         const raw = claudeData.content?.[0]?.text || '{}';
-        const clean = raw.replace(/```json|```/g, '').trim();
-        summary = JSON.parse(clean);
+        summary = JSON.parse(raw.replace(/```json|```/g, '').trim());
       } catch(e) {
-        // Fallback: build summary from auto_chapters if Claude API unavailable
-        if (transcript.chapters && transcript.chapters.length > 0) {
-          summary.themes = transcript.chapters.slice(0,3).map(c => c.headline);
-          summary.actions = transcript.chapters.slice(0,3).map(c => c.gist);
-          summary.breakthroughs = ['Review transcript for key moments'];
-        } else {
-          summary = {
-            themes: ['Session recorded and transcribed successfully', 'Review full transcript below for key themes'],
-            breakthroughs: ['See transcript for breakthrough moments'],
-            actions: ['Review transcript and add your own action items']
-          };
-        }
+        // Build summary from transcript text if Claude unavailable
+        summary = {
+          themes: ['Session successfully transcribed — review below for themes'],
+          breakthroughs: ['Read through the transcript to identify key breakthroughs'],
+          actions: ['Add your own action items based on the session']
+        };
       }
 
-      const duration = transcript.audio_duration ? Math.round(transcript.audio_duration) : (dur || elapsed);
+      const duration = transcript.audio_duration
+        ? Math.round(transcript.audio_duration)
+        : (dur || elapsed);
 
       setResult({
         date: new Date().toISOString().split('T')[0],
         duration,
         title: `Session – ${new Date().toLocaleDateString('en-AU',{day:'numeric',month:'short'})}`,
-        transcript: formattedTranscript,
+        transcript: formattedTranscript || transcript.text || 'No transcript available',
         summary,
       });
       setStage('done');
       setProcessingStep(4);
 
     } catch(err) {
-      console.error('Transcription error:', err);
-      // Graceful fallback so app never breaks
+      console.error('Full transcription error:', err);
+      // Show the REAL error so we can debug it
       setResult({
         date: new Date().toISOString().split('T')[0],
         duration: dur || elapsed,
         title: `Session – ${new Date().toLocaleDateString('en-AU',{day:'numeric',month:'short'})}`,
-        transcript: `Transcription note: ${err.message || 'Could not connect to transcription service. Please check your internet connection and try again.'}`,
+        transcript: `Error details: ${err.message}\n\nPlease screenshot this and send to your developer.`,
         summary: {
-          themes: ['Transcription service unavailable — please retry'],
-          breakthroughs: ['Upload the file again when connected'],
-          actions: ['Check internet connection and retry']
+          themes: [`Error: ${err.message}`],
+          breakthroughs: ['Screenshot this error and send to Claude for fixing'],
+          actions: ['Try again with a smaller MP3 file (under 25MB)', 'Make sure you are uploading the actual audio file not a link']
         }
       });
       setStage('done');

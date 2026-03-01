@@ -216,6 +216,54 @@ body{background:var(--cream);font-family:'DM Sans',sans-serif;color:var(--charco
 .av-1{background:#E8D5F5;color:#6B3FA0}.av-2{background:#D5EBF5;color:#1A6B8A}.av-3{background:#F5E8D5;color:#8A5C1A}.av-4{background:#D5F5E3;color:#1A7A45}.av-5{background:#F5D5D5;color:#8A1A1A}.av-6{background:#F5F5D5;color:#6B6B1A}
 
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ── MOBILE ── */
+@media (max-width: 768px) {
+  .sidebar { display:none !important; }
+  .main { margin-left:0 !important; padding:20px 16px 100px !important; }
+  .page-title { font-size:24px !important; }
+  .stats-row { grid-template-columns:1fr !important; gap:12px !important; margin-bottom:24px !important; }
+  .clients-grid { grid-template-columns:1fr !important; }
+  .detail-grid { grid-template-columns:1fr !important; }
+  .detail-hero { padding:20px !important; flex-wrap:wrap; gap:14px !important; }
+  .checkins-grid { grid-template-columns:1fr !important; }
+  .form-row { grid-template-columns:1fr !important; }
+  .page-header { flex-direction:column; gap:12px; }
+  .mode-title { font-size:12px !important; }
+  .mode-desc { display:none !important; }
+  .send-options { flex-direction:column; }
+
+  /* Bottom nav bar */
+  .bottom-nav {
+    display:flex !important;
+    position:fixed; bottom:0; left:0; right:0;
+    background:var(--forest); z-index:500;
+    padding:8px 0 24px;
+    box-shadow:0 -4px 20px rgba(0,0,0,0.2);
+  }
+  .bottom-nav-item {
+    flex:1; display:flex; flex-direction:column; align-items:center;
+    gap:3px; padding:6px 4px; cursor:pointer;
+    color:rgba(255,255,255,0.45); transition:all 0.2s; border:none;
+    background:none; font-family:'DM Sans',sans-serif;
+  }
+  .bottom-nav-item.active { color:var(--gold-light); }
+  .bottom-nav-item svg { width:22px; height:22px; }
+  .bottom-nav-label { font-size:10px; font-weight:500; letter-spacing:0.3px; }
+
+  /* Mobile top header */
+  .mobile-header {
+    display:flex !important;
+    align-items:center; justify-content:space-between;
+    margin-bottom:24px; padding-bottom:16px;
+    border-bottom:1px solid var(--border);
+  }
+  .mobile-logo { font-family:'Playfair Display',serif; font-size:22px; color:var(--forest); font-weight:600; }
+}
+@media (min-width: 769px) {
+  .bottom-nav { display:none !important; }
+  .mobile-header { display:none !important; }
+}
 </style>
 </head>
 <body>
@@ -693,6 +741,13 @@ function App() {
       </aside>
 
       <main className="main">
+        {/* Mobile header */}
+        <div className="mobile-header" style={{display:'none'}}>
+          <div className="mobile-logo">✦ CoachHub</div>
+          {view==='clients' && <button className="btn-primary" style={{padding:'8px 16px',fontSize:13}} onClick={()=>setShowAddClient(true)}><IcPlus/> Add</button>}
+          {view==='detail' && <button className="btn-ghost" style={{fontSize:13,display:'flex',alignItems:'center',gap:6}} onClick={()=>setView('clients')}><IcBack/> Back</button>}
+        </div>
+
         {/* DASHBOARD */}
         {view==='dashboard'&&(
           <div className="fade-up">
@@ -816,6 +871,26 @@ function App() {
       )}
 
       {toast&&<div className="toast">✓ {toast}</div>}
+
+      {/* ── BOTTOM NAV (mobile only) ── */}
+      <nav className="bottom-nav" style={{display:'none'}}>
+        <button className={`bottom-nav-item ${view==='dashboard'?'active':''}`} onClick={()=>setView('dashboard')}>
+          <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h4a1 1 0 001-1v-3h2v3a1 1 0 001 1h4a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+          <span className="bottom-nav-label">Home</span>
+        </button>
+        <button className={`bottom-nav-item ${view==='clients'||view==='detail'?'active':''}`} onClick={()=>setView('clients')}>
+          <svg viewBox="0 0 20 20" fill="currentColor"><path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zm8 0a3 3 0 11-6 0 3 3 0 016 0zM1 14a7 7 0 0114 0H1zm16 0a7 7 0 00-9.33-6.612A9 9 0 0119 14h-2z"/></svg>
+          <span className="bottom-nav-label">Clients</span>
+        </button>
+        <button className={`bottom-nav-item ${view==='checkins'?'active':''}`} onClick={()=>setView('checkins')}>
+          <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/></svg>
+          <span className="bottom-nav-label">Check-ins</span>
+        </button>
+        <button className={`bottom-nav-item`} onClick={()=>setShowAddClient(true)}>
+          <svg viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z"/></svg>
+          <span className="bottom-nav-label">Add Client</span>
+        </button>
+      </nav>
     </div>
   );
 }

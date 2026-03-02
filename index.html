@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>CoachHub — Life Coaching Platform</title>
+<title>CoachHub — High Performance Coaching Platform</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -455,7 +455,7 @@ function RecordingStudio({client, onSave}) {
       setProcessingStep(3);
 
       // ── Step 3: Generate AI coaching summary via Claude ──
-      const summaryPrompt = `You are an expert life coaching assistant. Carefully analyse this real coaching session transcript.
+      const summaryPrompt = `You are an expert High Performance Coaching assistant. Carefully analyse this real coaching session transcript.
 
 Client: ${client.name}
 Goals: ${client.goals?.join(', ')}
@@ -659,27 +659,115 @@ function CheckinsPage({clients, onMarkSent}) {
   const typingRef=useRef(null);
   const sel=clients.find(c=>c.id===selId);
 
-  const buildCheckin = c => {
-    const fn=c.name.split(' ')[0];
-    const quote=QUOTES[Math.floor(Math.random()*QUOTES.length)];
-    const goal=c.goals[0]||'your journey';
-    const action=c.recordings?.[0]?.summary?.actions?.[0]||`spending time reflecting on ${goal}`;
-    const ref=c.recordings?.[0]?.summary?.breakthroughs?.[0]||c.notes?.[0]?.text?.slice(0,100)||'';
-    const email=`Hi ${fn},\n\nI've been thinking about our last session and wanted to reach out. 💛\n\n${ref?`✨ What stood out to me:\n${ref}\n\n`:''}This week your focus is: ${goal}.\n\nYour intention: "${c.intentions||'Keep showing up for yourself.'}"\n\n🎯 Your one thing this week:\n${action}\n\nAnd I'll leave you with this thought:\n\n"${quote.text}"\n— ${quote.author}\n\nYou're doing the work, ${fn}. That takes real courage. I'm cheering you on every step of the way.\n\nWarmly,\nYour Coach`;
-    const sms=`Hi ${fn} 💛 Thinking of you this week! Focus: ${goal}. Your one thing: ${action.slice(0,80)}${action.length>80?'...':''} "${quote.text.slice(0,60)}…" — ${quote.author}. You've got this! 🌱`;
-    return {email,sms,quote};
+  const buildCheckin = async (c) => {
+    const fn = c.name.split(' ')[0];
+    const quote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
+    const lastRecording = c.recordings?.[0];
+    const goal = c.goals?.[0] || 'your journey';
+
+    // Pull real data from the most recent session
+    const breakthroughs = lastRecording?.summary?.breakthroughs || [];
+    const actions = lastRecording?.summary?.actions || [];
+    const themes = lastRecording?.summary?.themes || [];
+    const transcript = lastRecording?.transcript || '';
+    const sessionDate = lastRecording?.date ? new Date(lastRecording.date).toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'}) : 'our last session';
+
+    // Extract a real client quote from transcript
+    let clientQuote = '';
+    if (transcript) {
+      const lines = transcript.split('\n').filter(l => l.startsWith(fn + ':') && l.length > 40);
+      if (lines.length > 0) {
+        const randomLine = lines[Math.floor(Math.random() * Math.min(lines.length, 5))];
+        clientQuote = randomLine.replace(fn + ':', '').trim().slice(0, 120);
+      }
+    }
+
+    // Build the context summary for Claude to work with
+    const sessionContext = `
+Client first name: ${fn}
+Session date: ${sessionDate}
+Goals: ${c.goals?.join(', ')}
+Intention: ${c.intentions || 'Not set'}
+Key themes from session: ${themes.join('; ')}
+Breakthroughs: ${breakthroughs.join('; ')}
+Action items client committed to: ${actions.join('; ')}
+${clientQuote ? `Direct quote from client during session: "${clientQuote}"` : ''}
+Inspiring quote to include: "${quote.text}" — ${quote.author}
+    `.trim();
+
+    // Use Claude API to generate a genuinely personalised check-in
+    try {
+      const prompt = `You are a warm, high performance life coach writing a midweek check-in message to a client.
+
+Use ONLY the real session data below to write a deeply personalised message. Reference what was actually said. Make it feel like it came from a coach who was truly present in the session — not generic.
+
+${sessionContext}
+
+Write TWO versions:
+
+VERSION 1 — EMAIL (warm, personal, 150-200 words):
+- Open with their name and a warm personal reference to something from the session
+- Reference their actual breakthrough or a theme from the call
+- If there's a client quote, weave it in naturally (e.g. "When you said '...' that really stayed with me")
+- Remind them of their specific action item(s) they committed to
+- Include the inspiring quote
+- Close with encouragement that references their specific journey
+- Sign off as "Your Coach"
+
+VERSION 2 — WHATSAPP (punchy, warm, 2-3 sentences max):
+- Personal reference to the session
+- Their one key action reminder
+- Short motivational close
+
+Respond ONLY with this JSON (no markdown):
+{"email":"full email text here","sms":"whatsapp text here"}`;
+
+      const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1200,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+
+      const claudeData = await claudeRes.json();
+      const raw = claudeData.content?.[0]?.text || '{}';
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+      return { email: parsed.email, sms: parsed.sms, quote, isAI: true };
+
+    } catch(e) {
+      // Fallback to template if Claude API unavailable
+      const action = actions[0] || `reflecting on ${goal}`;
+      const breakthrough = breakthroughs[0] || '';
+      const email = `Hi ${fn},\n\nI've been thinking about our session on ${sessionDate} and wanted to check in midweek. 💛\n\n${breakthrough ? `✨ What stayed with me:\n${breakthrough}\n\n` : ''}${clientQuote ? `When you said "${clientQuote}" — that really resonated with me.\n\n` : ''}🎯 Your commitment this week:\n${action}\n\nHow's that going for you?\n\n"${quote.text}"\n— ${quote.author}\n\nYou're doing the work, ${fn}. Keep going.\n\nWarmly,\nYour Coach`;
+      const sms = `Hi ${fn} 💛 Midweek check-in! How's "${action.slice(0,60)}..." going? Thinking of you. "${quote.text.slice(0,50)}…" 🌱`;
+      return { email, sms, quote, isAI: false };
+    }
   };
 
   const typeText = text => {
-    setDisplayedText('');setIsTyping(true);let i=0;
-    const speed=Math.max(4,Math.floor(2000/text.length));
+    setDisplayedText(''); setIsTyping(true); let i = 0;
+    const speed = Math.max(3, Math.floor(2500 / text.length));
     clearInterval(typingRef.current);
-    typingRef.current=setInterval(()=>{ i++; setDisplayedText(text.slice(0,i)); if(i>=text.length){clearInterval(typingRef.current);setIsTyping(false);} },speed);
+    typingRef.current = setInterval(() => {
+      i++; setDisplayedText(text.slice(0, i));
+      if (i >= text.length) { clearInterval(typingRef.current); setIsTyping(false); }
+    }, speed);
   };
 
-  const generate = () => {
-    if(!sel)return; setGenerating(true);setCheckin(null);setDisplayedText('');
-    setTimeout(()=>{ const r=buildCheckin(sel); setCheckin(r); setGenerating(false); typeText(sendMode==='email'?r.email:r.sms); },1400);
+  const generate = async () => {
+    if (!sel) return;
+    setGenerating(true); setCheckin(null); setDisplayedText('');
+    try {
+      const r = await buildCheckin(sel);
+      setCheckin(r);
+      setGenerating(false);
+      typeText(sendMode === 'email' ? r.email : r.sms);
+    } catch(e) {
+      setGenerating(false);
+    }
   };
 
   const switchMode = m => { setSendMode(m); if(checkin) typeText(m==='email'?checkin.email:checkin.sms); };
@@ -696,7 +784,7 @@ function CheckinsPage({clients, onMarkSent}) {
 
   return (
     <div className="fade-up">
-      <div className="page-header"><div><div className="page-title">Weekly Check-ins ✨</div><div className="page-subtitle">AI-drafted personalised messages — ready in one click</div></div></div>
+      <div className="page-header"><div><div className="page-title">Smart Check-ins ✨</div><div className="page-subtitle">AI-drafted from your real session — personalised to what was actually said</div></div></div>
       <div className="checkins-grid">
         <div>
           <div className="client-select-list">
@@ -704,14 +792,22 @@ function CheckinsPage({clients, onMarkSent}) {
             {clients.map(c=>(
               <div key={c.id} className={`client-select-item ${selId===c.id?'active':''}`} onClick={()=>setSelId(c.id)}>
                 <div className={`client-avatar ${getAvColor(c.name)}`} style={{width:36,height:36,fontSize:13,borderRadius:10,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:600}}>{getInitials(c.name)}</div>
-                <div style={{flex:1,minWidth:0}}><div style={{fontSize:14,fontWeight:500}}>{c.name}</div><div style={{fontSize:12,color:'var(--muted)'}}>{c.goals[0]||'Life Coaching'}</div></div>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:14,fontWeight:500}}>{c.name}</div><div style={{fontSize:12,color:'var(--muted)'}}>{c.goals[0]||'High Performance Coaching'}</div></div>
                 {c.last_checkin&&<div style={{fontSize:10,background:'var(--green-light)',color:'var(--green)',padding:'2px 8px',borderRadius:20}}>Sent</div>}
               </div>
             ))}
           </div>
-          <div style={{background:'rgba(201,168,76,.08)',border:'1px solid rgba(201,168,76,.2)',borderRadius:14,padding:16,marginTop:16}}>
+          <div style={{background:'rgba(200,169,126,0.08)',border:'1px solid rgba(200,169,126,0.2)',borderRadius:14,padding:16,marginTop:16}}>
             <div style={{fontSize:12,fontWeight:600,color:'#7a5c1e',marginBottom:8,textTransform:'uppercase',letterSpacing:'1px'}}>💡 How it works</div>
-            <div style={{fontSize:12,color:'#8a6c30',lineHeight:1.8}}>1. Pick a client<br/>2. Hit Generate<br/>3. Review & tweak<br/>4. Copy for Email or WhatsApp<br/>5. Send — done in 60 seconds!</div>
+            <div style={{fontSize:12,color:'#8a6c30',lineHeight:1.8}}>
+              1. Pick a client<br/>
+              2. Hit Generate<br/>
+              3. Claude reads the <strong>real transcript</strong> from your last session<br/>
+              4. Pulls out breakthroughs, actions + actual quotes<br/>
+              5. Writes a deeply personal midweek message<br/>
+              6. Copy for Email or WhatsApp<br/>
+              7. Send — done in 60 seconds!
+            </div>
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:16}}>
@@ -724,6 +820,28 @@ function CheckinsPage({clients, onMarkSent}) {
                 </div>
                 {sel.intentions&&<div style={{padding:'14px 20px',fontSize:13,color:'#666',fontStyle:'italic',lineHeight:1.6,borderLeft:'3px solid var(--gold)',margin:'0 20px 16px',background:'var(--cream)',borderRadius:8,marginTop:12}}>"{sel.intentions}"</div>}
               </div>
+              {/* Session data source indicator */}
+              {sel.recordings?.length > 0 ? (
+                <div style={{background:'var(--green-light)',border:'1px solid rgba(26,140,110,0.2)',borderRadius:12,padding:'12px 16px',display:'flex',alignItems:'flex-start',gap:10}}>
+                  <span style={{fontSize:18,flexShrink:0}}>🎙️</span>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600,color:'var(--green)',marginBottom:2}}>Pulling from real session data</div>
+                    <div style={{fontSize:12,color:'#2d7a5e',lineHeight:1.6}}>
+                      Last session: <strong>{sel.recordings[0].title}</strong><br/>
+                      {sel.recordings[0].summary?.breakthroughs?.[0] && `Breakthrough: "${sel.recordings[0].summary.breakthroughs[0].slice(0,60)}..."`}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{background:'rgba(200,169,126,0.08)',border:'1px solid rgba(200,169,126,0.2)',borderRadius:12,padding:'12px 16px',display:'flex',alignItems:'flex-start',gap:10}}>
+                  <span style={{fontSize:18,flexShrink:0}}>⚠️</span>
+                  <div style={{fontSize:12,color:'#8a6c30',lineHeight:1.6}}>
+                    <strong>No session recorded yet</strong><br/>
+                    Upload a call recording first so the check-in can reference what was actually discussed.
+                  </div>
+                </div>
+              )}
+
               <button className={`btn-generate`} onClick={generate} disabled={generating}>
                 {generating?<><div className="processing-spinner" style={{width:18,height:18,borderWidth:2}}/> Crafting…</>:<><IcSparkle/> Generate Weekly Check-in</>}
               </button>
@@ -890,13 +1008,13 @@ function App() {
       <aside className="sidebar">
         <div className="logo">
           <div className="logo-mark"><svg viewBox="0 0 20 20"><path d="M10 2a8 8 0 100 16A8 8 0 0010 2zm0 14a6 6 0 110-12 6 6 0 010 12zm0-9a1 1 0 011 1v3l2 1a1 1 0 01-1 1.73l-2.5-1.44A1 1 0 019 11V8a1 1 0 011-1z"/></svg></div>
-          <div><div className="logo-text">CoachHub</div><div className="logo-sub">Life Coaching</div></div>
+          <div><div className="logo-text">CoachHub</div><div className="logo-sub">High Performance Coaching</div></div>
         </div>
         <div style={{marginBottom:8}}>
           <div className="nav-label">Workspace</div>
           <div className={`nav-item ${view==='dashboard'?'active':''}`} onClick={()=>setView('dashboard')}><IcHome/> Dashboard</div>
           <div className={`nav-item ${view==='clients'||view==='detail'?'active':''}`} onClick={()=>setView('clients')}><IcPeople/> Clients <span className="nav-badge">{clients.length}</span></div>
-          <div className={`nav-item ${view==='checkins'?'active':''}`} onClick={()=>setView('checkins')}><IcSend/> Weekly Check-ins</div>
+          <div className={`nav-item ${view==='checkins'?'active':''}`} onClick={()=>setView('checkins')}><IcSend/> Smart Check-ins</div>
           <div className={`nav-item`}><IcMic/> Recordings <span className="nav-badge">{totalRecordings}</span></div>
         </div>
         <div className="sidebar-footer">
@@ -947,7 +1065,7 @@ function App() {
         {view==='clients'&&(
           <div className="fade-up">
             <div className="page-header">
-              <div><div className="page-title">Your Clients</div><div className="page-subtitle">{clients.length} life coaching client{clients.length!==1?'s':''} · <span className="saved-dot"/>saved to database</div></div>
+              <div><div className="page-title">Your Clients</div><div className="page-subtitle">{clients.length} High Performance Coaching client{clients.length!==1?'s':''} · <span className="saved-dot"/>saved to database</div></div>
               <button className="btn-primary" onClick={()=>setShowAddClient(true)}><IcPlus/> Add Client</button>
             </div>
             <div style={{display:'flex',gap:12,marginBottom:32}}>

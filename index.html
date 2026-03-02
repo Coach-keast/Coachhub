@@ -367,104 +367,95 @@ function RecordingStudio({client, onSave}) {
 
   const reset = () => { setMode(null);setStage('idle');setElapsed(0);setProcessingStep(0);setResult(null);setUploadFile(null); };
 
-  const ASSEMBLYAI_KEY = '062bf8761f4d42c6b806cdd17e46cdc7';
+  const DEEPGRAM_KEY = '4e0d86eaa32a658c594989b8a46145f8cd50d8af';
 
   const runProcessing = async (dur, audioBlob) => {
     setStage('processing'); setProcessingStep(1);
     const fn = client.name.split(' ')[0];
 
     try {
-      // ── Step 1: Upload audio file ──
-      let uploadUrl = null;
+      if (!audioBlob) throw new Error('No audio file received — please try uploading again.');
 
-      if (audioBlob) {
-        const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
-          method: 'POST',
-          headers: {
-            'authorization': ASSEMBLYAI_KEY,
-          },
-          body: audioBlob
-        });
+      // ── Step 1: Send audio directly to Deepgram ──
+      // Deepgram accepts the file directly — no separate upload step needed
+      const params = new URLSearchParams({
+        model: 'nova-2',
+        diarize: 'true',          // speaker separation
+        punctuate: 'true',
+        paragraphs: 'true',
+        smart_format: 'true',
+      });
 
-        if (!uploadRes.ok) {
-          const errText = await uploadRes.text();
-          throw new Error(`Upload failed (${uploadRes.status}): ${errText}`);
-        }
+      const deepgramRes = await fetch(`https://api.deepgram.com/v1/listen?${params}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${DEEPGRAM_KEY}`,
+          'Content-Type': audioBlob.type || 'audio/mp3',
+        },
+        body: audioBlob
+      });
 
-        const uploadData = await uploadRes.json();
-        uploadUrl = uploadData.upload_url;
-        if (!uploadUrl) throw new Error('No upload URL returned from AssemblyAI');
+      if (!deepgramRes.ok) {
+        const errText = await deepgramRes.text();
+        throw new Error(`Deepgram error (${deepgramRes.status}): ${errText}`);
       }
 
       setProcessingStep(2);
 
-      // ── Step 2: Submit transcription job ──
-      const transcriptBody = {
-        audio_url: uploadUrl,
-        speaker_labels: true,
-        speakers_expected: 2,
-      };
+      const deepgramData = await deepgramRes.json();
 
-      const transcriptRes = await fetch('https://api.assemblyai.com/v2/transcript', {
-        method: 'POST',
-        headers: {
-          'authorization': ASSEMBLYAI_KEY,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(transcriptBody)
-      });
-
-      if (!transcriptRes.ok) {
-        const errText = await transcriptRes.text();
-        throw new Error(`Transcription request failed (${transcriptRes.status}): ${errText}`);
-      }
-
-      const transcriptData = await transcriptRes.json();
-      const transcriptId = transcriptData.id;
-      if (!transcriptId) throw new Error('No transcript ID returned');
-
-      // ── Step 3: Poll for completion ──
-      let transcript = null;
-      for (let i = 0; i < 120; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-        const pollRes = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
-          headers: { 'authorization': ASSEMBLYAI_KEY }
-        });
-        const pollData = await pollRes.json();
-
-        if (pollData.status === 'completed') {
-          transcript = pollData;
-          break;
-        }
-        if (pollData.status === 'error') {
-          throw new Error(`Transcription error: ${pollData.error}`);
-        }
-        // still processing — keep polling
-      }
-
-      if (!transcript) throw new Error('Transcription timed out after 6 minutes');
-
-      setProcessingStep(3);
-
-      // ── Step 4: Format transcript with speaker labels ──
+      // ── Step 2: Format transcript with speaker labels ──
       let formattedTranscript = '';
-      if (transcript.utterances && transcript.utterances.length > 0) {
+      const utterances = deepgramData?.results?.utterances;
+      const words = deepgramData?.results?.channels?.[0]?.alternatives?.[0]?.words;
+
+      if (utterances && utterances.length > 0) {
+        // Use utterances for clean speaker-separated transcript
         const speakerMap = {};
         let count = 0;
         const labels = ['Coach', fn];
-        transcript.utterances.forEach(u => {
-          if (!(u.speaker in speakerMap)) {
-            speakerMap[u.speaker] = labels[count] || `Speaker ${count + 1}`;
+        utterances.forEach(u => {
+          const spk = u.speaker;
+          if (!(spk in speakerMap)) {
+            speakerMap[spk] = labels[count] || `Speaker ${count + 1}`;
             count++;
           }
-          formattedTranscript += `${speakerMap[u.speaker]}: ${u.text}\n\n`;
+          formattedTranscript += `${speakerMap[spk]}: ${u.transcript}\n\n`;
         });
+      } else if (words && words.length > 0) {
+        // Fallback: build from words with speaker info
+        const speakerMap = {};
+        let count = 0;
+        const labels = ['Coach', fn];
+        let currentSpeaker = null;
+        let currentText = '';
+        words.forEach(w => {
+          const spk = w.speaker;
+          if (!(spk in speakerMap)) {
+            speakerMap[spk] = labels[count] || `Speaker ${count + 1}`;
+            count++;
+          }
+          if (spk !== currentSpeaker) {
+            if (currentText) formattedTranscript += `${speakerMap[currentSpeaker]}: ${currentText.trim()}\n\n`;
+            currentSpeaker = spk;
+            currentText = '';
+          }
+          currentText += w.punctuated_word + ' ';
+        });
+        if (currentText) formattedTranscript += `${speakerMap[currentSpeaker]}: ${currentText.trim()}\n\n`;
       } else {
-        formattedTranscript = transcript.text || '';
+        // Plain transcript fallback
+        formattedTranscript = deepgramData?.results?.channels?.[0]?.alternatives?.[0]?.transcript || 'Transcript not available';
       }
 
-      // ── Step 5: AI coaching summary via Claude ──
-      const summaryPrompt = `You are an expert life coaching assistant. Analyse this coaching session transcript carefully.
+      const audioDuration = deepgramData?.metadata?.duration
+        ? Math.round(deepgramData.metadata.duration)
+        : (dur || elapsed);
+
+      setProcessingStep(3);
+
+      // ── Step 3: Generate AI coaching summary via Claude ──
+      const summaryPrompt = `You are an expert life coaching assistant. Carefully analyse this real coaching session transcript.
 
 Client: ${client.name}
 Goals: ${client.goals?.join(', ')}
@@ -473,10 +464,10 @@ Intention: ${client.intentions}
 TRANSCRIPT:
 ${formattedTranscript.slice(0, 8000)}
 
-Respond ONLY with a JSON object, no markdown, no explanation, just the JSON:
+Respond ONLY with a JSON object, no markdown, no extra text:
 {"themes":["theme 1","theme 2","theme 3"],"breakthroughs":["breakthrough 1","breakthrough 2"],"actions":["action 1","action 2","action 3"]}
 
-Base everything ONLY on what was actually said in the transcript.`;
+Base EVERYTHING only on what was actually said in the transcript above.`;
 
       let summary = { themes: [], breakthroughs: [], actions: [] };
 
@@ -492,42 +483,37 @@ Base everything ONLY on what was actually said in the transcript.`;
         });
         const claudeData = await claudeRes.json();
         const raw = claudeData.content?.[0]?.text || '{}';
-        summary = JSON.parse(raw.replace(/```json|```/g, '').trim());
+        summary = JSON.parse(raw.replace(/```json|```/g,'').trim());
       } catch(e) {
-        // Build summary from transcript text if Claude unavailable
+        // If Claude summary fails, build basic summary from transcript
         summary = {
-          themes: ['Session successfully transcribed — review below for themes'],
-          breakthroughs: ['Read through the transcript to identify key breakthroughs'],
-          actions: ['Add your own action items based on the session']
+          themes: ['Session transcribed — review transcript below for key themes'],
+          breakthroughs: ['Read through the transcript to identify breakthrough moments'],
+          actions: ['Add your action items based on what was discussed']
         };
       }
 
-      const duration = transcript.audio_duration
-        ? Math.round(transcript.audio_duration)
-        : (dur || elapsed);
-
       setResult({
         date: new Date().toISOString().split('T')[0],
-        duration,
+        duration: audioDuration,
         title: `Session – ${new Date().toLocaleDateString('en-AU',{day:'numeric',month:'short'})}`,
-        transcript: formattedTranscript || transcript.text || 'No transcript available',
+        transcript: formattedTranscript,
         summary,
       });
       setStage('done');
       setProcessingStep(4);
 
     } catch(err) {
-      console.error('Full transcription error:', err);
-      // Show the REAL error so we can debug it
+      console.error('Transcription error:', err);
       setResult({
         date: new Date().toISOString().split('T')[0],
         duration: dur || elapsed,
         title: `Session – ${new Date().toLocaleDateString('en-AU',{day:'numeric',month:'short'})}`,
-        transcript: `Error details: ${err.message}\n\nPlease screenshot this and send to your developer.`,
+        transcript: `Error: ${err.message}`,
         summary: {
           themes: [`Error: ${err.message}`],
-          breakthroughs: ['Screenshot this error and send to Claude for fixing'],
-          actions: ['Try again with a smaller MP3 file (under 25MB)', 'Make sure you are uploading the actual audio file not a link']
+          breakthroughs: ['Screenshot this and send to Claude for fixing'],
+          actions: ['Try again with your MP3 file', 'Make sure file is under 25MB']
         }
       });
       setStage('done');

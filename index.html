@@ -672,13 +672,23 @@ function CheckinsPage({clients, onMarkSent}) {
     const transcript = lastRecording?.transcript || '';
     const sessionDate = lastRecording?.date ? new Date(lastRecording.date).toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'}) : 'our last session';
 
-    // Extract a real client quote from transcript
+    // Extract a meaningful client quote from transcript — filter out filler/logistics
     let clientQuote = '';
     if (transcript) {
-      const lines = transcript.split('\n').filter(l => l.startsWith(fn + ':') && l.length > 40);
+      const fillerWords = ['yeah', 'yep', 'okay', 'ok', 'sure', 'great', 'good', 'right', 'hmm', 'um', 'uh', 'so', 'eight', 'eleven', 'time', 'schedule', 'session', 'week', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'call', 'speak'];
+      const lines = transcript.split('\n').filter(l => {
+        const text = l.replace(/^[^:]+:/, '').trim().toLowerCase();
+        if (!l.startsWith(fn + ':')) return false;
+        if (text.length < 60) return false; // too short to be meaningful
+        const fillerCount = fillerWords.filter(w => text.includes(w)).length;
+        if (fillerCount > 3) return false; // too much filler
+        // Must contain emotionally meaningful words
+        const meaningfulWords = ['feel', 'think', 'believe', 'afraid', 'scared', 'want', 'need', 'real', 'alway', 'never', 'life', 'change', 'hard', 'difficult', 'realise', 'realize', 'understand', 'know', 'different', 'important', 'matter', 'deserve', 'worthy', 'confidence', 'fear', 'hope', 'dream', 'goal', 'struggle', 'trying', 'fail', 'success', 'better', 'worse', 'pattern', 'habit', 'control', 'decision'];
+        return meaningfulWords.some(w => text.includes(w));
+      });
       if (lines.length > 0) {
-        const randomLine = lines[Math.floor(Math.random() * Math.min(lines.length, 5))];
-        clientQuote = randomLine.replace(fn + ':', '').trim().slice(0, 120);
+        const best = lines[Math.floor(Math.random() * Math.min(lines.length, 3))];
+        clientQuote = best.replace(fn + ':', '').trim().slice(0, 150);
       }
     }
 
@@ -697,30 +707,45 @@ Inspiring quote to include: "${quote.text}" — ${quote.author}
 
     // Use Claude API to generate a genuinely personalised check-in
     try {
-      const prompt = `You are a warm, high performance life coach writing a midweek check-in message to a client.
+      const prompt = `You are an expert high performance coach writing a warm, personal midweek check-in to a client.
 
-Use ONLY the real session data below to write a deeply personalised message. Reference what was actually said. Make it feel like it came from a coach who was truly present in the session — not generic.
+IMPORTANT RULES:
+1. NEVER use scheduling talk, logistics, or small talk as a quote or reference (e.g. "yeah no that's great", "let's move the time", "see you next week" are NOT meaningful moments)
+2. Only reference emotionally significant moments — realisations, fears, goals, commitments, identity shifts
+3. If the breakthroughs or quotes provided are not meaningful (just logistics/filler), DO NOT use them — write warmly from the themes and action items instead
+4. A client quote is only worth using if it reveals something about their inner world, fears, goals or growth
+5. The message must feel like it came from a coach who deeply LISTENED — not a template
 
+SESSION DATA:
 ${sessionContext}
+
+HOW TO JUDGE A GOOD QUOTE vs BAD QUOTE:
+✅ GOOD: "I realised I've been playing small my whole life"
+✅ GOOD: "I'm scared that if I succeed, people will expect more from me"
+✅ GOOD: "I don't know if I deserve this"
+❌ BAD: "Yeah no that's great"
+❌ BAD: "So we'll do an eight to eleven"
+❌ BAD: Any scheduling, time, logistics talk
 
 Write TWO versions:
 
 VERSION 1 — EMAIL (warm, personal, 150-200 words):
-- Open with their name and a warm personal reference to something from the session
-- Reference their actual breakthrough or a theme from the call
-- If there's a client quote, weave it in naturally (e.g. "When you said '...' that really stayed with me")
-- Remind them of their specific action item(s) they committed to
-- Include the inspiring quote
-- Close with encouragement that references their specific journey
-- Sign off as "Your Coach"
+- Open with their first name and a genuine warm reference to the session
+- If there's a meaningful breakthrough — reference it specifically
+- If there's a meaningful client quote — weave it in: "When you said '...' that really stayed with me"
+- If there are NO meaningful quotes or breakthroughs — skip those sections and write warmly from the themes and goals instead. DO NOT make something up.
+- Remind them of their specific committed action item(s)
+- Include the inspiring quote naturally
+- Close with personalised encouragement tied to their specific journey
+- Sign as "Your Coach"
 
-VERSION 2 — WHATSAPP (punchy, warm, 2-3 sentences max):
-- Personal reference to the session
-- Their one key action reminder
-- Short motivational close
+VERSION 2 — WHATSAPP (2-3 sentences, punchy and warm):
+- One personal reference to the session theme
+- Their key action reminder
+- Short motivational close with emoji
 
-Respond ONLY with this JSON (no markdown):
-{"email":"full email text here","sms":"whatsapp text here"}`;
+Respond ONLY with this exact JSON format, no markdown, no extra text:
+{"email":"full email text here with real line breaks as \\n","sms":"whatsapp message here"}`;
 
       const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',

@@ -332,6 +332,85 @@ function ProcessingView({step}) {
   );
 }
 
+function SpeakerAssignView({result, clientName, onConfirm, onDiscard}) {
+  const fn = clientName.split(' ')[0];
+  // Get a sample line from each speaker
+  const lines = result.transcript.split('\n').filter(l => l.trim());
+  const speakerSamples = {};
+  lines.forEach(l => {
+    const match = l.match(/^(Speaker \w+):/i);
+    if (match && !speakerSamples[match[1]]) {
+      speakerSamples[match[1]] = l.replace(match[0], '').trim().slice(0, 80);
+    }
+  });
+  const speakers = Object.keys(speakerSamples);
+
+  // If only 1 speaker or no speaker labels — skip straight through
+  if (speakers.length <= 1) {
+    // Relabel what we have as Coach + client
+    const fixed = result.transcript
+      .replace(/Speaker 0:/g, 'Coach:')
+      .replace(/Speaker A:/gi, 'Coach:')
+      .replace(/Speaker 1:/g, `${fn}:`)
+      .replace(/Speaker B:/gi, `${fn}:`);
+    onConfirm({...result, transcript: fixed});
+    return null;
+  }
+
+  const [coachSpeaker, setCoachSpeaker] = useState(speakers[0]);
+
+  const confirm = () => {
+    const clientSpeaker = speakers.find(s => s !== coachSpeaker) || speakers[1];
+    let fixed = result.transcript;
+    // Relabel — do client first to avoid double-replacement
+    fixed = fixed.replace(new RegExp(`^${clientSpeaker}:`, 'gm'), `___CLIENT___:`);
+    fixed = fixed.replace(new RegExp(`^${coachSpeaker}:`, 'gm'), `Coach:`);
+    fixed = fixed.replace(/^___CLIENT___:/gm, `${fn}:`);
+    onConfirm({...result, transcript: fixed});
+  };
+
+  return (
+    <div style={{padding:'0 24px 24px'}}>
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:'16px 0',color:'var(--green)',fontSize:14,fontWeight:500}}>
+        <span style={{fontSize:20}}>✓</span> Transcribed — {fmtDuration(result.duration)} recorded
+      </div>
+      <div style={{background:'rgba(21,101,160,0.06)',border:'1px solid var(--border)',borderRadius:14,padding:20,marginBottom:20}}>
+        <div style={{fontWeight:600,fontSize:15,marginBottom:4,color:'var(--forest)'}}>One quick thing — who's who? 🎙️</div>
+        <div style={{fontSize:13,color:'var(--muted)',marginBottom:20,lineHeight:1.6}}>Deepgram detected 2 speakers. Tap the one that sounds like <strong>you</strong> — so we label the transcript correctly.</div>
+        {speakers.map(spk => (
+          <div
+            key={spk}
+            onClick={() => setCoachSpeaker(spk)}
+            style={{
+              padding:'14px 16px', borderRadius:12, marginBottom:10, cursor:'pointer',
+              border:`2px solid ${coachSpeaker===spk ? 'var(--sage)' : 'var(--border)'}`,
+              background: coachSpeaker===spk ? 'rgba(21,101,160,0.06)' : 'var(--card)',
+              transition:'all 0.2s'
+            }}
+          >
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
+              <div style={{width:28,height:28,borderRadius:50,background:coachSpeaker===spk?'var(--sage)':'var(--border)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'#fff',fontWeight:600,flexShrink:0}}>
+                {coachSpeaker===spk ? '✓' : spk.replace('Speaker ','')}
+              </div>
+              <div style={{fontWeight:500,fontSize:13}}>{coachSpeaker===spk ? '👤 This is me (Coach)' : `👤 ${spk}`}</div>
+            </div>
+            <div style={{fontSize:12,color:'var(--muted)',fontStyle:'italic',paddingLeft:38,lineHeight:1.5}}>
+              "{speakerSamples[spk] || 'No sample available'}..."
+            </div>
+          </div>
+        ))}
+        <div style={{fontSize:12,color:'var(--muted)',marginTop:8}}>
+          The other speaker will be labelled as <strong>{fn}</strong>.
+        </div>
+      </div>
+      <div style={{display:'flex',gap:12}}>
+        <button className="btn-primary" onClick={confirm}>Confirm & Continue</button>
+        <button className="btn-secondary" onClick={onDiscard}>Discard</button>
+      </div>
+    </div>
+  );
+}
+
 function ResultView({result, onSave, onDiscard}) {
   return (
     <div style={{padding:'0 24px 24px'}}>
@@ -355,7 +434,7 @@ function ResultView({result, onSave, onDiscard}) {
 // ─── Recording Studio ─────────────────────────────────────────────────────────
 function RecordingStudio({client, onSave}) {
   const [mode, setMode] = useState(null);
-  const [stage, setStage] = useState('idle');
+  const [stage, setStage] = useState('idle'); // idle | recording | processing | speakers | done
   const [elapsed, setElapsed] = useState(0);
   const [processingStep, setProcessingStep] = useState(0);
   const [result, setResult] = useState(null);
@@ -500,7 +579,7 @@ Base EVERYTHING only on what was actually said in the transcript above.`;
         transcript: formattedTranscript,
         summary,
       });
-      setStage('done');
+      setStage('speakers'); // go to speaker assignment first
       setProcessingStep(4);
 
     } catch(err) {
@@ -555,6 +634,7 @@ Base EVERYTHING only on what was actually said in the transcript above.`;
   const handleFile = f => { if(f) setUploadFile(f); };
   const processUpload = () => { const est = Math.round((uploadFile.size/1000000)*60)||1800; runProcessing(est, uploadFile); };
   const saveSession = () => { onSave({id:Date.now().toString(),...result}); reset(); };
+  const confirmSpeakers = (updatedResult) => { setResult(updatedResult); setStage('done'); };
   useEffect(()=>()=>clearInterval(timerRef.current),[]);
 
   if (!mode) return (
@@ -610,6 +690,7 @@ Base EVERYTHING only on what was actually said in the transcript above.`;
       {mode==='live'&&stage==='recording'&&(<div className="recording-stage recording-active"><div className="rec-indicator"><div className="rec-dot"/> REC — {fmtDuration(elapsed)}</div><div className="waveform">{[...Array(8)].map((_,i)=><div key={i} className="wave-bar"/>)}</div><button className="btn-danger" onClick={stopLive}><IcStop/> Stop & Process</button></div>)}
       {(mode==='upload'||mode==='zoom')&&stage==='idle'&&<UploadUI emoji={mode==='zoom'?'🎥':'🎙️'} tip={mode==='zoom'?'📁 Find your Zoom recording: Mac → Documents → Zoom → [folder] → .mp4':'📱 iPhone: Open Rev Call Recorder → find recording → Share → AirDrop to Mac → upload here'}/>}
       {stage==='processing'&&<ProcessingView step={processingStep}/>}
+      {stage==='speakers'&&result&&<SpeakerAssignView result={result} clientName={client.name} onConfirm={confirmSpeakers} onDiscard={reset}/>}
       {stage==='done'&&result&&<ResultView result={result} onSave={saveSession} onDiscard={reset}/>}
     </div>
   );
